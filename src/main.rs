@@ -1,6 +1,6 @@
 extern crate reqwest;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
 use reqwest::{header, RedirectPolicy};
-use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT, CONTENT_TYPE};
 extern crate crypto;
 extern crate env_logger;
 use crypto::digest::Digest;
@@ -20,7 +20,7 @@ use scraper::Html;
 use scraper::Selector;
 extern crate select;
 use select::document::Document;
-use select::predicate::{Class, Name, Predicate};
+use select::predicate::{Attr, Class, Name};
 
 const WANAPLAY_END_POINT: &str = "http://fr.wanaplay.com/";
 
@@ -34,6 +34,12 @@ impl WanaplayPassword {
         hasher.input_str(self.secret_password.as_str());
         hasher.result_str()
     }
+}
+
+#[derive(Debug)]
+struct UserInfos {
+    id: String,
+    name: String,
 }
 
 struct WanaplayCredentials {
@@ -94,10 +100,9 @@ fn wanaplay_route(route: &str) -> String {
     format!("{}{}", WANAPLAY_END_POINT, route)
 }
 
-fn is_openned(target_date: NaiveDate) -> bool {
+fn is_openned(client: &reqwest::Client, target_date: NaiveDate) -> bool {
     let forbidden = "Vous ne pouvez pas voir le planning";
-    let client = reqwest::Client::new();
-    println!("watch_openning {:?}", target_date);
+    println!("watch_openning {:?} at {:?}", target_date, Local::now());
     let mut response = client
         .post(wanaplay_route("reservation/planning2").as_str())
         .form(&[("date", target_date.format("%Y-%m-%d").to_string())])
@@ -106,8 +111,62 @@ fn is_openned(target_date: NaiveDate) -> bool {
     !response.text().unwrap().contains(forbidden)
 }
 
-fn book(target_date: NaiveDate, court_time: NaiveTime, login: String, crypted_password: String) {
+fn get_user_infos(client: &reqwest::Client, reservation_id: &String) -> UserInfos {
+    let mut response = client
+        .post(wanaplay_route("reservation/takeReservationShow").as_str())
+        .form(&[("idTspl", reservation_id)])
+        .send()
+        .unwrap();
+
+    let document = Document::from_read(response).unwrap();
+    let infos = document
+        .find(Attr("id", "users_0"))
+        .next()
+        .unwrap()
+        .children()
+        .next()
+        .unwrap();
+    UserInfos {
+        id: infos.attr("value").unwrap().to_string(),
+        name: infos.text(),
+    }
+}
+
+fn find_book_ids(
+    client: &reqwest::Client,
+    target_date: NaiveDate,
+    court_time: NaiveTime,
+) -> Vec<String> {
     println!("book {:?} at {:?}", target_date, court_time);
+    let mut response = client
+        .post(wanaplay_route("reservation/planning2").as_str())
+        .form(&[("date", target_date.format("%Y-%m-%d").to_string())])
+        .send()
+        .unwrap();
+
+    let document = Document::from_read(response).unwrap();
+    println!("{:?}", court_time.format("%H:%M"));
+    let ids = document
+        .find(Class("creneauLibre"))
+        .filter(|node| {
+            node.children()
+                .next()
+                .unwrap()
+                .children()
+                .next()
+                .unwrap()
+                .text()
+                == court_time.format("%H:%M").to_string()
+        })
+        .filter(|node| node.attr("class").unwrap() == "creneauLibre")
+        .map(|node| node.attr("onclick").unwrap())
+        .map(|link| link.split("idTspl=").collect::<Vec<_>>()[1].replace("\"", ""))
+        .collect::<Vec<_>>();
+    println!("{:?}", ids);
+    ids
+}
+
+fn authenticate(login: String, crypted_password: String) -> reqwest::Client {
     let authent_client = reqwest::Client::builder()
         .redirect(RedirectPolicy::none())
         .build()
@@ -127,7 +186,6 @@ fn book(target_date: NaiveDate, court_time: NaiveTime, login: String, crypted_pa
     let mut headers = header::HeaderMap::new();
     headers.insert(header::COOKIE, session_cookie.clone());
     println!("{:?}", headers);
-    println!("{:?}", target_date.format("%Y-%m-%d").to_string());
     let client = reqwest::Client::builder()
         .default_headers(headers)
         .build()
@@ -138,39 +196,51 @@ fn book(target_date: NaiveDate, court_time: NaiveTime, login: String, crypted_pa
         .form(&[("date", "2018-12-24")])
         .send()
         .unwrap();
+    client
+}
 
+fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, date: &NaiveDate) {
+    println!("book");
+    println!("{:?}", id_booking);
     let mut response = client
-        .post(wanaplay_route("reservation/planning2").as_str())
-        .form(&[("date", target_date.format("%Y-%m-%d").to_string())])
+        .post(wanaplay_route("reservation/takeReservationBase").as_str())
+        .form(&[
+            ("date", date.format("%Y-%m-%d").to_string()),
+            ("idTspl", id_booking.to_string()),
+            ("commit", "Confirmer".to_string()),
+            ("nb_participants", "1".to_string()),
+            ("tab_users_id_0", user_infos.id.clone()),
+            ("tab_users_name_0", user_infos.name.clone()),
+        ])
         .send()
         .unwrap();
-
-    let document = Document::from_read(response).unwrap();
-    println!("{:?}", document.find(Class("timeSlotTime")).count());
-    println!("{:?}", document.find(Class("creneauLibre")).count());
-    println!("{:?}", court_time.format("%H:%M"));
-    let ids = document.find(Class("creneauLibre"))
-        .filter(|node| node.children().next().unwrap().children().next().unwrap().text() == court_time.format("%H:%M").to_string())
-        .filter(|node| node.attr("class").unwrap() == "creneauLibre")
-        .map(|node| node.attr("onclick").unwrap())
-        .map(|link| link.split("idTspl=").collect::<Vec<_>>()[1].replace("\"", ""))
-        .collect::<Vec<_>>();
-    println!("{:?}", ids);
-
 }
 
 fn main() {
     let mut opt = Opt::from_args();
     println!("{:?}", opt);
     let parameters = validate_args(&mut opt);
-    book(
-        NaiveDate::from_ymd(2019, 1, 2),
-        parameters.court_time,
+    let client = authenticate(
         parameters.wanaplay_credentials.login.clone(),
         parameters.wanaplay_credentials.password.crypted(),
     );
+//    let target_date = NaiveDate::from_ymd(2019, 1, 18);
+//    let openned = is_openned(&client, target_date);
+//    println!("openned = {:?}", openned);
+//    panic!("plop");
+//    let ids = find_book_ids(&client, target_date, parameters.court_time);
+//    if !ids.is_empty() {
+//        let id = ids.into_iter().next().unwrap();
+//        let user_infos = get_user_infos(&client, &id);
+//        book(&client, &user_infos, &id, &target_date);
+//    }
     loop {
-        let now: DateTime<Local> = Local::now();
+        let now: DateTime<Local> = if env::var("fake_date").is_ok() {
+            env::var("fake_date").unwrap().parse::<DateTime<Local>>().unwrap()
+        }
+        else {
+            Local::now()
+        };
         println!("loop {:?}", now);
         if now.weekday() == parameters.weekday.pred() {
             let target_date = now + Duration::days(15);
@@ -178,16 +248,16 @@ fn main() {
                 NaiveDate::from_ymd(target_date.year(), target_date.month(), target_date.day());
             println!("target_date = {:?}", target_date);
             if now.hour() == 23 {
-                if now.minute() >= 55 {
-                    while !is_openned(target_date) {
+                if now.minute() >= 58 {
+                    while !is_openned(&client, target_date) {
                         thread::sleep(time::Duration::from_secs(2));
                     }
-                    book(
-                        target_date,
-                        parameters.court_time,
-                        parameters.wanaplay_credentials.login.clone(),
-                        parameters.wanaplay_credentials.password.crypted(),
-                    );
+                    let ids = find_book_ids(&client, target_date, parameters.court_time);
+                    if !ids.is_empty() {
+                        let id = ids.into_iter().next().unwrap();
+                        let user_infos = get_user_infos(&client, &id);
+                        book(&client, &user_infos, &id, &target_date);
+                    }
                 } else {
                     println!("sleep for 1 min");
                     thread::sleep(time::Duration::from_secs(60));
