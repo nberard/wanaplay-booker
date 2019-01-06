@@ -1,5 +1,4 @@
 extern crate reqwest;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
 use reqwest::{header, RedirectPolicy};
 extern crate crypto;
 extern crate env_logger;
@@ -15,12 +14,14 @@ use chrono::Weekday;
 use std::env;
 use std::thread;
 use std::time;
-extern crate scraper;
-use scraper::Html;
-use scraper::Selector;
 extern crate select;
+#[macro_use]
+extern crate failure;
+use failure::bail;
 use select::document::Document;
-use select::predicate::{Attr, Class, Name};
+use select::predicate::{Attr, Class};
+pub type Error = failure::Error;
+pub type Result<T> = std::result::Result<T, Error>;
 
 const WANAPLAY_END_POINT: &str = "http://fr.wanaplay.com/";
 
@@ -64,7 +65,7 @@ struct Opt {
     court_time: NaiveTime,
 }
 
-fn validate_args(opt: &mut Opt) -> Parameters {
+fn validate_args(opt: &mut Opt) -> Result<Parameters> {
     let mut valid_times = vec![];
     let mut start_time = NaiveTime::from_hms(9, 0, 0);
     let end_time = NaiveTime::from_hms(23, 0, 0);
@@ -75,24 +76,27 @@ fn validate_args(opt: &mut Opt) -> Parameters {
         };
     }
     if !valid_times.contains(&opt.court_time) {
-        panic!(
+        bail!(format!(
             "{} is not a valid court time, should be one of {:?}",
             opt.court_time, valid_times
-        );
+        ));
     }
-    let weekday = opt
-        .weekday
-        .parse::<Weekday>()
-        .unwrap_or_else(|_| panic!("{} is not a valid week day", opt.weekday));
-    Parameters {
-        weekday,
-        court_time: opt.court_time,
-        wanaplay_credentials: WanaplayCredentials {
-            login: env::var("wanaplay_login").unwrap(),
-            password: WanaplayPassword {
-                secret_password: env::var("wanaplay_password").unwrap(),
+    let weekday = match opt.weekday.parse::<Weekday>() {
+        Ok(v) => v,
+        Err(_) => bail!(format!("{} is not a valid week day", opt.weekday)),
+    };
+    match (env::var("wanaplay_login"), env::var("wanaplay_password")) {
+        (Ok(login), Ok(password)) => Ok(Parameters {
+            weekday,
+            court_time: opt.court_time,
+            wanaplay_credentials: WanaplayCredentials {
+                login,
+                password: WanaplayPassword {
+                    secret_password: password,
+                },
             },
-        },
+        }),
+        (_, _) => Err(format_err!("environment variable wanaplay_login and wanaplay_password should be set")),
     }
 }
 
@@ -112,7 +116,7 @@ fn is_openned(client: &reqwest::Client, target_date: NaiveDate) -> bool {
 }
 
 fn get_user_infos(client: &reqwest::Client, reservation_id: &String) -> UserInfos {
-    let mut response = client
+    let response = client
         .post(wanaplay_route("reservation/takeReservationShow").as_str())
         .form(&[("idTspl", reservation_id)])
         .send()
@@ -138,7 +142,7 @@ fn find_book_ids(
     court_time: NaiveTime,
 ) -> Vec<String> {
     println!("book {:?} at {:?}", target_date, court_time);
-    let mut response = client
+    let response = client
         .post(wanaplay_route("reservation/planning2").as_str())
         .form(&[("date", target_date.format("%Y-%m-%d").to_string())])
         .send()
@@ -191,7 +195,7 @@ fn authenticate(login: String, crypted_password: String) -> reqwest::Client {
         .build()
         .unwrap();
     // useless request
-    let mut response = client
+    client
         .post(wanaplay_route("reservation/planning2").as_str())
         .form(&[("date", "2018-12-24")])
         .send()
@@ -202,7 +206,7 @@ fn authenticate(login: String, crypted_password: String) -> reqwest::Client {
 fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, date: &NaiveDate) {
     println!("book");
     println!("{:?}", id_booking);
-    let mut response = client
+    client
         .post(wanaplay_route("reservation/takeReservationBase").as_str())
         .form(&[
             ("date", date.format("%Y-%m-%d").to_string()),
@@ -217,28 +221,40 @@ fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, d
 }
 
 fn main() {
+    env_logger::init();
+    if let Err(err) = run() {
+        for cause in err.iter_chain() {
+            eprintln!("{}", cause);
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let mut opt = Opt::from_args();
     println!("{:?}", opt);
-    let parameters = validate_args(&mut opt);
+    let parameters = validate_args(&mut opt)?;
     let client = authenticate(
         parameters.wanaplay_credentials.login.clone(),
         parameters.wanaplay_credentials.password.crypted(),
     );
-//    let target_date = NaiveDate::from_ymd(2019, 1, 18);
-//    let openned = is_openned(&client, target_date);
-//    println!("openned = {:?}", openned);
-//    panic!("plop");
-//    let ids = find_book_ids(&client, target_date, parameters.court_time);
-//    if !ids.is_empty() {
-//        let id = ids.into_iter().next().unwrap();
-//        let user_infos = get_user_infos(&client, &id);
-//        book(&client, &user_infos, &id, &target_date);
-//    }
+    //    let target_date = NaiveDate::from_ymd(2019, 1, 21);
+    //    let openned = is_openned(&client, target_date);
+    //    println!("openned = {:?}", openned);
+    //    panic!("plop");
+    //    let ids = find_book_ids(&client, target_date, parameters.court_time);
+    //    if !ids.is_empty() {
+    //        let id = ids.into_iter().next().unwrap();
+    //        let user_infos = get_user_infos(&client, &id);
+    //        book(&client, &user_infos, &id, &target_date);
+    //    }
     loop {
         let now: DateTime<Local> = if env::var("fake_date").is_ok() {
-            env::var("fake_date").unwrap().parse::<DateTime<Local>>().unwrap()
-        }
-        else {
+            env::var("fake_date")
+                .unwrap()
+                .parse::<DateTime<Local>>()
+                .unwrap()
+        } else {
             Local::now()
         };
         println!("loop {:?}", now);
