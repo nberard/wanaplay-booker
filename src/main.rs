@@ -234,10 +234,6 @@ fn run() -> Result<()> {
     let mut opt = Opt::from_args();
     println!("{:?}", opt);
     let parameters = validate_args(&mut opt)?;
-    let client = authenticate(
-        parameters.wanaplay_credentials.login.clone(),
-        parameters.wanaplay_credentials.password.crypted(),
-    );
     //    let target_date = NaiveDate::from_ymd(2019, 1, 21);
     //    let openned = is_openned(&client, target_date);
     //    println!("openned = {:?}", openned);
@@ -258,6 +254,10 @@ fn run() -> Result<()> {
             Local::now()
         };
         println!("loop {:?}", now);
+        let client = authenticate(
+            parameters.wanaplay_credentials.login.clone(),
+            parameters.wanaplay_credentials.password.crypted(),
+        );
         if now.weekday() == parameters.weekday.pred() {
             let target_date = now + Duration::days(15);
             let target_date =
