@@ -141,7 +141,7 @@ fn find_book_ids(
     target_date: NaiveDate,
     court_time: NaiveTime,
 ) -> Vec<String> {
-    println!("book {:?} at {:?}", target_date, court_time);
+    println!("finding ids for {:?} at {:?}", target_date, court_time);
     let response = client
         .post(wanaplay_route("reservation/planning2").as_str())
         .form(&[("date", target_date.format("%Y-%m-%d").to_string())])
@@ -149,7 +149,6 @@ fn find_book_ids(
         .unwrap();
 
     let document = Document::from_read(response).unwrap();
-    println!("{:?}", court_time.format("%H:%M"));
     let ids = document
         .find(Class("creneauLibre"))
         .filter(|node| {
@@ -170,7 +169,7 @@ fn find_book_ids(
     ids
 }
 
-fn authenticate(login: String, crypted_password: String) -> reqwest::Client {
+fn authenticate(login: String, crypted_password: String) -> Result<reqwest::Client> {
     let authent_client = reqwest::Client::builder()
         .redirect(RedirectPolicy::none())
         .build()
@@ -184,23 +183,22 @@ fn authenticate(login: String, crypted_password: String) -> reqwest::Client {
     if location.is_none()
         || location.unwrap().to_str().unwrap() != wanaplay_route("auth/infos").as_str()
     {
-        panic!("unable to login");
+        bail!("unable to login");
     }
     let session_cookie = authent_response.headers().get(header::SET_COOKIE).unwrap();
     let mut headers = header::HeaderMap::new();
     headers.insert(header::COOKIE, session_cookie.clone());
-    println!("{:?}", headers);
     let client = reqwest::Client::builder()
         .default_headers(headers)
         .build()
         .unwrap();
-    // useless request
+    // useless request but mandatory :/
     client
         .post(wanaplay_route("reservation/planning2").as_str())
         .form(&[("date", "2018-12-24")])
         .send()
         .unwrap();
-    client
+    Ok(client)
 }
 
 fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, date: &NaiveDate) {
@@ -232,7 +230,6 @@ fn main() {
 
 fn run() -> Result<()> {
     let mut opt = Opt::from_args();
-    println!("{:?}", opt);
     let parameters = validate_args(&mut opt)?;
     //    let target_date = NaiveDate::from_ymd(2019, 1, 21);
     //    let openned = is_openned(&client, target_date);
@@ -257,7 +254,7 @@ fn run() -> Result<()> {
         let client = authenticate(
             parameters.wanaplay_credentials.login.clone(),
             parameters.wanaplay_credentials.password.crypted(),
-        );
+        )?;
         if now.weekday() == parameters.weekday.pred() {
             let target_date = now + Duration::days(15);
             let target_date =
@@ -279,8 +276,8 @@ fn run() -> Result<()> {
                     thread::sleep(time::Duration::from_secs(60));
                 }
             } else {
-                println!("sleep for 55 min");
-                thread::sleep(time::Duration::from_secs(55 * 60));
+                println!("sleep for 50 min");
+                thread::sleep(time::Duration::from_secs(50 * 60));
             }
         } else {
             println!("sleep for 23h");
