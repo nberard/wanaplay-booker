@@ -96,7 +96,9 @@ fn validate_args(opt: &mut Opt) -> Result<Parameters> {
                 },
             },
         }),
-        (_, _) => Err(format_err!("environment variable wanaplay_login and wanaplay_password should be set")),
+        (_, _) => Err(format_err!(
+            "environment variable wanaplay_login and wanaplay_password should be set"
+        )),
     }
 }
 
@@ -175,12 +177,30 @@ fn authenticate(login: String, crypted_password: String) -> Result<reqwest::Clie
         .build()
         .unwrap();
     let authent_response = authent_client
-        .post("https://www.adopteunmec.com/auth/login")
-        .form(&[("username", "berard.nicolas@gmail.com"), ("password", "toto")])
+        .post(wanaplay_route("auth/doLogin").as_str())
+        .form(&[("login", login), ("sha1mdp", crypted_password)])
         .send()
         .unwrap();
-    println!("resp = {}" , authent_response.status());
-    Ok(authent_client)
+    let location = authent_response.headers().get(header::LOCATION);
+    if location.is_none()
+        || location.unwrap().to_str().unwrap() != wanaplay_route("auth/infos").as_str()
+    {
+        bail!("unable to login");
+    }
+    let session_cookie = authent_response.headers().get(header::SET_COOKIE).unwrap();
+    let mut headers = header::HeaderMap::new();
+    headers.insert(header::COOKIE, session_cookie.clone());
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    // useless request but mandatory :/
+    client
+        .post(wanaplay_route("reservation/planning2").as_str())
+        .form(&[("date", "2018-12-24")])
+        .send()
+        .unwrap();
+    Ok(client)
 }
 
 fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, date: &NaiveDate) {
