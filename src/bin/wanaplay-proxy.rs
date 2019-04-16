@@ -20,10 +20,10 @@ use serde_yaml::from_reader;
 
 use std::collections::BTreeMap;
 use std::env;
-use std::process::Command;
-use std::result::Result;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
+use std::result::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -63,7 +63,8 @@ struct Compose {
 
 impl Compose {
     pub fn get() -> Self {
-        let path = fs::canonicalize(&PathBuf::from(env::var("compose_file_path").unwrap())).unwrap();
+        let path =
+            fs::canonicalize(&PathBuf::from(env::var("compose_file_path").unwrap())).unwrap();
         let mut compose: Self = from_reader(std::fs::File::open(path.clone()).unwrap()).unwrap();
         compose.path = path;
         compose
@@ -78,9 +79,9 @@ impl Compose {
         self.services.insert(name, service);
     }
 
-    pub fn remove_service(&mut self, name: String) -> Result<(), Error> {
-        if self.services.contains_key(&name) {
-            self.services.remove(&name);
+    pub fn remove_service(&mut self, name: &str) -> Result<(), Error> {
+        if self.services.contains_key(name) {
+            self.services.remove(name);
             Ok(())
         } else {
             bail!("service {:?} not found", name);
@@ -136,7 +137,14 @@ fn main() {
     rocket::ignite()
         .mount(
             "/",
-            routes![get_all_bots, get_bot, new_bot, remove_bot, deploy],
+            routes![
+                get_all_bots,
+                get_bot,
+                new_bot,
+                remove_bot,
+                deploy,
+                update_bot
+            ],
         )
         .launch();
 }
@@ -185,7 +193,7 @@ fn get_bot(id: String) -> Option<Json<Watcher>> {
 #[delete("/bots/<id>")]
 fn remove_bot(id: String) -> Status {
     let mut compose = Compose::get();
-    let removed = compose.remove_service(id);
+    let removed = compose.remove_service(&id);
     match removed {
         Ok(_) => {
             compose.update();
@@ -213,6 +221,24 @@ fn new_bot(
                 Some(Json(watcher_result)),
             ))
         }
+    }
+}
+
+#[put("/bots/<id>", format = "json", data = "<watcher>")]
+fn update_bot(id: String, watcher: Json<Watcher>) -> Status {
+    let bot = get_bot(id.clone());
+    if let Some(bot) = bot {
+        if id == watcher.name {
+            let mut compose = Compose::get();
+            compose.remove_service(&watcher.name);
+            compose.add_service(watcher.name.clone(), Service::from(watcher));
+            compose.update();
+            Status::Ok
+        } else {
+            Status::Conflict
+        }
+    } else {
+        Status::NotFound
     }
 }
 
