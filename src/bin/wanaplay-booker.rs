@@ -233,13 +233,20 @@ fn main() {
 fn run() -> Result<()> {
     let mut opt = Opt::from_args();
     let parameters = validate_args(&mut opt)?;
-    //    let target_date = NaiveDate::from_ymd(2019, 1, 21);
+    //    let client = authenticate(
+    //        parameters.wanaplay_credentials.login.clone(),
+    //        parameters.wanaplay_credentials.password.crypted(),
+    //    )?;
+    //    let target_date = NaiveDate::from_ymd(2019, 4, 18);
     //    let openned = is_openned(&client, target_date);
-    //    println!("openned = {:?}", openned);
-    //    panic!("plop");
+    //    dbg!(openned);
     //    let ids = find_book_ids(&client, target_date, parameters.court_time);
+    //    dbg!(&ids);
     //    if !ids.is_empty() {
-    //        let id = ids.into_iter().next().unwrap();
+    //        let id = match ids.len() {
+    //            4 => ids[1].clone(),
+    //            _ => ids[0].clone(),
+    //        };
     //        let user_infos = get_user_infos(&client, &id);
     //        book(&client, &user_infos, &id, &target_date);
     //    }
@@ -269,7 +276,10 @@ fn run() -> Result<()> {
                     }
                     let ids = find_book_ids(&client, target_date, parameters.court_time);
                     if !ids.is_empty() {
-                        let id = ids.into_iter().next().unwrap();
+                        let id = match ids.len() {
+                            4 => ids[1].clone(),
+                            _ => ids[0].clone(),
+                        };
                         let user_infos = get_user_infos(&client, &id);
                         book(&client, &user_infos, &id, &target_date);
                     }
