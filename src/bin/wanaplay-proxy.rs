@@ -24,30 +24,46 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::result::Result;
+use wanaplay_booker::*;
+use select::document::Document;
+use select::predicate::Class;
+
+const WANAPLAY_SERVICE_LABEL: &str = "wanaplay_type=bot";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct Service {
     image: String,
-    environment: Vec<String>,
-    pub command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volumes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ports: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    labels: Option<Vec<String>>,
 }
 
 impl From<Json<Watcher>> for Service {
     fn from(watcher: Json<Watcher>) -> Self {
         Service {
             image: "touplitoui/wanaplay-booker-bot".to_string(),
-            environment: vec![
+            environment: Some(vec![
                 format!("wanaplay_login={}", env::var("wanaplay_login").unwrap()),
                 format!(
                     "wanaplay_password={}",
                     env::var("wanaplay_password").unwrap()
                 ),
-            ],
-            command: format!(
+            ]),
+            command: Some(format!(
                 "wanaplay-booker -c {}:00 -w {}",
                 watcher.court_time, watcher.week_day
-            ),
+            )),
+            volumes: None,
+            ports: None,
+            labels: Some(vec![WANAPLAY_SERVICE_LABEL.to_string()])
         }
     }
 }
@@ -117,7 +133,8 @@ struct Watcher {
 impl From<Service> for Watcher {
     fn from(service: Service) -> Self {
         let re = Regex::new(r"wanaplay-booker -c (\d{2}:\d{2}):\d{2} -w (\w+)").unwrap();
-        let matches = re.captures(&service.command).unwrap();
+        let command = &service.command.unwrap();
+        let matches = re.captures(command).unwrap();
         Watcher {
             name: "".to_string(),
             status: WatcherStatus::Created,
@@ -127,50 +144,34 @@ impl From<Service> for Watcher {
     }
 }
 
-fn main() {
-    for env_var in vec!["compose_file_path", "wanaplay_login", "wanaplay_password"] {
-        if env::var(env_var).is_err() {
-            println!("environment variable {} should be set", env_var);
-            std::process::exit(1);
-        }
-    }
-    rocket::ignite()
-        .mount(
-            "/",
-            routes![
-                get_all_bots,
-                get_bot,
-                new_bot,
-                remove_bot,
-                deploy,
-                update_bot
-            ],
-        )
-        .launch();
-}
-
 fn get_bots() -> Vec<Watcher> {
     let compose = Compose::get();
     let path = &compose.path;
     let bots: Vec<Watcher> = compose
         .services
         .into_iter()
-        .map(|(name, elt)| {
-            let output = Command::new("docker-compose")
-                .arg("-f")
-                .arg(path)
-                .arg("ps")
-                .arg("-q")
-                .arg(name.clone())
-                .output()
-                .expect("failed to execute process");
-            dbg!(&output);
-            let mut watcher = Watcher::from(elt);
-            watcher.name = name;
-            if !output.stdout.is_empty() {
-                watcher.status = WatcherStatus::Running;
+        .filter_map(|(name, elt)| {
+            dbg!(&name);
+            if let Some(labels) = elt.labels.clone() {
+                if labels.into_iter().find(|label| *label == WANAPLAY_SERVICE_LABEL.to_string()).is_some() {
+                    let output = Command::new("docker-compose")
+                        .arg("-f")
+                        .arg(path)
+                        .arg("ps")
+                        .arg("-q")
+                        .arg(name.clone())
+                        .output()
+                        .expect("failed to execute process");
+                    dbg!(&output);
+                    let mut watcher = Watcher::from(elt);
+                    watcher.name = name;
+                    if !output.stdout.is_empty() {
+                        watcher.status = WatcherStatus::Running;
+                    }
+                    return Some(watcher);
+                }
             }
-            watcher
+            None
         })
         .collect();
     dbg!(bots.clone());
@@ -227,10 +228,10 @@ fn new_bot(
 #[put("/bots/<id>", format = "json", data = "<watcher>")]
 fn update_bot(id: String, watcher: Json<Watcher>) -> Status {
     let bot = get_bot(id.clone());
-    if let Some(bot) = bot {
+    if bot.is_some() {
         if id == watcher.name {
             let mut compose = Compose::get();
-            compose.remove_service(&watcher.name);
+            compose.remove_service(&watcher.name).unwrap();
             compose.add_service(watcher.name.clone(), Service::from(watcher));
             compose.update();
             Status::Ok
@@ -260,4 +261,78 @@ fn deploy() -> Result<status::Created<()>, status::BadRequest<Json<ErrorContaine
             String::from_utf8(output.stderr).expect("Not UTF-8"),
         ]))))),
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct Booking {
+    id: String,
+    date: String,
+    court_time: String,
+    court_number: u8,
+}
+
+fn get_bookings() -> Vec<Booking> {
+    let client = get_logged_client().unwrap();
+    let response = client
+        .get(wanaplay_route("plannings/espacesportifpontoise").as_str()).send().unwrap();
+    let document = Document::from_read(response).unwrap();
+    document
+        .find(Class("lienMyRes"))
+        .map(|resa| {
+            let re = Regex::new(r"(.+)\u{a0}(.+)\u{a0}Court (\d)").unwrap();
+            let resa_line = resa.children().next().unwrap().text();
+            let matches = re.captures(resa_line.as_str()).unwrap();
+            Booking {
+                id: resa.attr("href").unwrap().rsplit("/").collect::<Vec<_>>()[0].into(),
+                date: matches.get(1).unwrap().as_str().into(),
+                court_time: matches.get(2).unwrap().as_str().into(),
+                court_number: matches.get(3).unwrap().as_str().parse().unwrap(),
+            }
+        }).collect::<Vec<_>>()
+}
+
+#[get("/bookings")]
+fn get_all_bookings() -> Json<Vec<Booking>> {
+    let bookings = get_bookings();
+    Json(bookings)
+}
+
+#[delete("/bookings/<id>")]
+fn remove_booking(id: String) -> Status {
+    let client = get_logged_client().unwrap();
+    let exists = get_bookings().iter().find(|booking| booking.id == id).is_some();
+    if exists {
+        client.get(wanaplay_route(format!("reservation/modifyReservationBase?idTspl={}&user_action=delete", id).as_str()).as_str()).send().unwrap();
+        match get_bookings().iter().find(|booking| booking.id == id) {
+            Some(_) => Status::BadRequest,
+            None => Status::NoContent,
+        }
+    }
+    else {
+        Status::NotFound
+    }
+}
+
+fn main() {
+    for env_var in vec!["compose_file_path", "wanaplay_login", "wanaplay_password"] {
+        if env::var(env_var).is_err() {
+            println!("environment variable {} should be set", env_var);
+            std::process::exit(1);
+        }
+    }
+    rocket::ignite()
+        .mount(
+            "/",
+            routes![
+                get_all_bots,
+                get_bot,
+                new_bot,
+                remove_bot,
+                deploy,
+                update_bot,
+                get_all_bookings,
+                remove_booking,
+            ],
+        )
+        .launch();
 }

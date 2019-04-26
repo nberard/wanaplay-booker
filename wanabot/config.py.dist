@@ -1,0 +1,3 @@
+import os
+token = os.getenv('bot_token', 'your_token_here')
+booker_api = os.getenv('booker_api', 'http://your.api')

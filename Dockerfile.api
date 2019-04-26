@@ -1,0 +1,6 @@
+FROM alpine
+ARG TAG=release
+RUN apk update && apk add bash
+WORKDIR /bin
+COPY target/x86_64-unknown-linux-musl/${TAG}/wanaplay-proxy.
+CMD wanaplay-proxy

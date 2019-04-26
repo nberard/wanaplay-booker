@@ -1,5 +1,5 @@
 [package]
-name = "wanaplay-booker"
+name = "wanaplay_booker"
 version = "0.1.0"
 authors = ["Nicolas Berard <berard.nicolas@gmail.com>"]
 edition = "2018"
