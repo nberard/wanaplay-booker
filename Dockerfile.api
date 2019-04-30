@@ -1,6 +1,9 @@
 FROM alpine
 ARG TAG=release
-RUN apk update && apk add bash
-WORKDIR /bin
-COPY target/x86_64-unknown-linux-musl/${TAG}/wanaplay-proxy.
+RUN apk update && apk add docker bash
+COPY target/x86_64-unknown-linux-musl/${TAG}/wanaplay-proxy /bin/
+RUN mkdir /data
+WORKDIR /data
+VOLUME /data/docker-compose.yml
+ENV compose_file_path /data/docker-compose.yml
 CMD wanaplay-proxy

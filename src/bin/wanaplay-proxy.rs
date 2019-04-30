@@ -17,6 +17,7 @@ use rocket::http::Status;
 use rocket::response::status;
 use rocket_contrib::json::Json;
 use serde_yaml::from_reader;
+use std::str;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -125,7 +126,7 @@ impl ErrorContainer {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct Watcher {
     name: String,
-    status: WatcherStatus,
+    status: String,
     court_time: String,
     week_day: String,
 }
@@ -137,7 +138,7 @@ impl From<Service> for Watcher {
         let matches = re.captures(command).unwrap();
         Watcher {
             name: "".to_string(),
-            status: WatcherStatus::Created,
+            status: "Created".to_string(),
             court_time: matches.get(1).unwrap().as_str().to_string(),
             week_day: matches.get(2).unwrap().as_str().to_string(),
         }
@@ -151,22 +152,22 @@ fn get_bots() -> Vec<Watcher> {
         .services
         .into_iter()
         .filter_map(|(name, elt)| {
-            dbg!(&name);
             if let Some(labels) = elt.labels.clone() {
                 if labels.into_iter().find(|label| *label == WANAPLAY_SERVICE_LABEL.to_string()).is_some() {
-                    let output = Command::new("docker-compose")
-                        .arg("-f")
-                        .arg(path)
+                    let mut watcher = Watcher::from(elt);
+                    watcher.name = name.clone();
+                    let output = Command::new("docker")
+                        .arg("-H")
+                        .arg("unix:///var/run/docker.sock")
                         .arg("ps")
-                        .arg("-q")
-                        .arg(name.clone())
+                        .arg("--filter")
+                        .arg(format!("name={}", name.clone()))
+                        .arg("--format")
+                        .arg("{{.Status}}")
                         .output()
                         .expect("failed to execute process");
-                    dbg!(&output);
-                    let mut watcher = Watcher::from(elt);
-                    watcher.name = name;
                     if !output.stdout.is_empty() {
-                        watcher.status = WatcherStatus::Running;
+                        watcher.status = String::from_utf8(output.stdout).unwrap().trim().to_string();
                     }
                     return Some(watcher);
                 }
@@ -174,7 +175,6 @@ fn get_bots() -> Vec<Watcher> {
             None
         })
         .collect();
-    dbg!(bots.clone());
     bots
 }
 
@@ -246,15 +246,16 @@ fn update_bot(id: String, watcher: Json<Watcher>) -> Status {
 #[post("/bots/actions/deploy")]
 fn deploy() -> Result<status::Created<()>, status::BadRequest<Json<ErrorContainer>>> {
     let compose = Compose::get();
-    let output = Command::new("docker-compose")
-        .arg("-f")
-        .arg(&compose.path)
-        .arg("up")
-        .arg("-d")
-        .arg("--remove-orphans")
+    let output = Command::new("docker")
+        .arg("-H")
+        .arg("unix:///var/run/docker.sock")
+        .arg("stack")
+        .arg("deploy")
+        .arg("-c")
+        .arg("docker-compose.yml")
+        .arg("wanaplay")
         .output()
         .expect("failed to execute process");
-    dbg!(&output);
     match output.status.success() {
         true => Ok(status::Created("/bots".to_string(), None)),
         false => Err(status::BadRequest(Some(Json(ErrorContainer::new(vec![
