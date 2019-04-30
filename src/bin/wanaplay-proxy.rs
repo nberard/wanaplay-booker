@@ -147,7 +147,6 @@ impl From<Service> for Watcher {
 
 fn get_bots() -> Vec<Watcher> {
     let compose = Compose::get();
-    let path = &compose.path;
     let bots: Vec<Watcher> = compose
         .services
         .into_iter()
@@ -197,9 +196,22 @@ fn remove_bot(id: String) -> Status {
     let removed = compose.remove_service(&id);
     match removed {
         Ok(_) => {
-            compose.update();
-            Status::NoContent
-        }
+            let output = Command::new("docker")
+                .arg("-H")
+                .arg("unix:///var/run/docker.sock")
+                .arg("service")
+                .arg("rm")
+                .arg(format!("wanaplay_{}", id.clone()))
+                .output()
+                .expect("failed to execute process");
+            match output.status.success() {
+                true => {
+                    compose.update();
+                    Status::NoContent
+                },
+                false => Status::InternalServerError
+            }
+        },
         Err(_) => Status::NotFound,
     }
 }
@@ -245,7 +257,6 @@ fn update_bot(id: String, watcher: Json<Watcher>) -> Status {
 
 #[post("/bots/actions/deploy")]
 fn deploy() -> Result<status::Created<()>, status::BadRequest<Json<ErrorContainer>>> {
-    let compose = Compose::get();
     let output = Command::new("docker")
         .arg("-H")
         .arg("unix:///var/run/docker.sock")
