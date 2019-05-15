@@ -149,8 +149,6 @@ fn find_book_ids(
     ids
 }
 
-
-
 fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, date: &NaiveDate) {
     println!("book");
     println!("{:?}", id_booking);
@@ -199,13 +197,9 @@ fn run() -> Result<()> {
     //        book(&client, &user_infos, &id, &target_date);
     //    }
     loop {
-        let now: DateTime<Local> = if env::var("fake_date").is_ok() {
-            env::var("fake_date")
-                .unwrap()
-                .parse::<DateTime<Local>>()
-                .unwrap()
-        } else {
-            Local::now()
+        let now: DateTime<Local> = match env::var("fake_date") {
+            Ok(fake_date) => fake_date.parse::<DateTime<Local>>().unwrap(),
+            Err(_) => Local::now(),
         };
         println!("loop {:?}", now);
         let client = authenticate(

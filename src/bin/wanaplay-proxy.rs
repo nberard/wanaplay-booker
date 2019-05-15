@@ -19,6 +19,8 @@ use rocket_contrib::json::Json;
 use serde_yaml::from_reader;
 use std::str;
 
+use select::document::Document;
+use select::predicate::Class;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -26,8 +28,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::result::Result;
 use wanaplay_booker::*;
-use select::document::Document;
-use select::predicate::Class;
 
 const WANAPLAY_SERVICE_LABEL: &str = "wanaplay_type=bot";
 
@@ -64,7 +64,7 @@ impl From<Json<Watcher>> for Service {
             )),
             volumes: None,
             ports: None,
-            labels: Some(vec![WANAPLAY_SERVICE_LABEL.to_string()])
+            labels: Some(vec![WANAPLAY_SERVICE_LABEL.to_string()]),
         }
     }
 }
@@ -152,7 +152,11 @@ fn get_bots() -> Vec<Watcher> {
         .into_iter()
         .filter_map(|(name, elt)| {
             if let Some(labels) = elt.labels.clone() {
-                if labels.into_iter().find(|label| *label == WANAPLAY_SERVICE_LABEL.to_string()).is_some() {
+                if labels
+                    .into_iter()
+                    .find(|label| *label == WANAPLAY_SERVICE_LABEL.to_string())
+                    .is_some()
+                {
                     let mut watcher = Watcher::from(elt);
                     watcher.name = name.clone();
                     let output = Command::new("docker")
@@ -166,7 +170,8 @@ fn get_bots() -> Vec<Watcher> {
                         .output()
                         .expect("failed to execute process");
                     if !output.stdout.is_empty() {
-                        watcher.status = String::from_utf8(output.stdout).unwrap().trim().to_string();
+                        watcher.status =
+                            String::from_utf8(output.stdout).unwrap().trim().to_string();
                     }
                     return Some(watcher);
                 }
@@ -208,10 +213,10 @@ fn remove_bot(id: String) -> Status {
                 true => {
                     compose.update();
                     Status::NoContent
-                },
-                false => Status::InternalServerError
+                }
+                false => Status::InternalServerError,
             }
-        },
+        }
         Err(_) => Status::NotFound,
     }
 }
@@ -275,34 +280,6 @@ fn deploy() -> Result<status::Created<()>, status::BadRequest<Json<ErrorContaine
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-struct Booking {
-    id: String,
-    date: String,
-    court_time: String,
-    court_number: u8,
-}
-
-fn get_bookings() -> Vec<Booking> {
-    let client = get_logged_client().unwrap();
-    let response = client
-        .get(wanaplay_route("plannings/espacesportifpontoise").as_str()).send().unwrap();
-    let document = Document::from_read(response).unwrap();
-    document
-        .find(Class("lienMyRes"))
-        .map(|resa| {
-            let re = Regex::new(r"(.+)\u{a0}(.+)\u{a0}Court (\d)").unwrap();
-            let resa_line = resa.children().next().unwrap().text();
-            let matches = re.captures(resa_line.as_str()).unwrap();
-            Booking {
-                id: resa.attr("href").unwrap().rsplit("/").collect::<Vec<_>>()[0].into(),
-                date: matches.get(1).unwrap().as_str().into(),
-                court_time: matches.get(2).unwrap().as_str().into(),
-                court_number: matches.get(3).unwrap().as_str().parse().unwrap(),
-            }
-        }).collect::<Vec<_>>()
-}
-
 #[get("/bookings")]
 fn get_all_bookings() -> Json<Vec<Booking>> {
     let bookings = get_bookings();
@@ -312,15 +289,29 @@ fn get_all_bookings() -> Json<Vec<Booking>> {
 #[delete("/bookings/<id>")]
 fn remove_booking(id: String) -> Status {
     let client = get_logged_client().unwrap();
-    let exists = get_bookings().iter().find(|booking| booking.id == id).is_some();
+    let exists = get_bookings()
+        .iter()
+        .find(|booking| booking.id == id)
+        .is_some();
     if exists {
-        client.get(wanaplay_route(format!("reservation/modifyReservationBase?idTspl={}&user_action=delete", id).as_str()).as_str()).send().unwrap();
+        client
+            .get(
+                wanaplay_route(
+                    format!(
+                        "reservation/modifyReservationBase?idTspl={}&user_action=delete",
+                        id
+                    )
+                    .as_str(),
+                )
+                .as_str(),
+            )
+            .send()
+            .unwrap();
         match get_bookings().iter().find(|booking| booking.id == id) {
             Some(_) => Status::BadRequest,
             None => Status::NoContent,
         }
-    }
-    else {
+    } else {
         Status::NotFound
     }
 }

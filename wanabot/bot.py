@@ -121,6 +121,7 @@ echo_handler = MessageHandler(Filters.text, echo)
 dispatcher.add_handler(echo_handler)
 
 def help(update, context):
+    logger.info('chat_id={}'.format(update.message.chat_id))
     help_text = """
     commands availables:
     /add [day] [court_time] -> create a bot for day of week [day] at [court_time]  
