@@ -1,6 +1,6 @@
-extern crate reqwest;
 extern crate crypto;
 extern crate env_logger;
+extern crate reqwest;
 extern crate structopt;
 use structopt::StructOpt;
 extern crate chrono;

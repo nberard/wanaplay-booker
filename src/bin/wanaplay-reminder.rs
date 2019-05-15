@@ -61,9 +61,9 @@ fn run() -> Result<()> {
                     .post(format!("https://api.telegram.org/bot{}/sendMessage", bot_token).as_str())
                     .form(&params)
                     .send()?;
-                println!("sleep for 1d");
-                thread::sleep(time::Duration::from_secs(24 * 60 * 60));
             }
+            println!("sleep for 1d");
+            thread::sleep(time::Duration::from_secs(24 * 60 * 60));
         } else {
             println!("sleep for 1h");
             thread::sleep(time::Duration::from_secs(60 * 60));
