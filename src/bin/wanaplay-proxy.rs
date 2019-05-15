@@ -19,8 +19,6 @@ use rocket_contrib::json::Json;
 use serde_yaml::from_reader;
 use std::str;
 
-use select::document::Document;
-use select::predicate::Class;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;

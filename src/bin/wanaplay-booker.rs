@@ -1,9 +1,6 @@
 extern crate reqwest;
-use reqwest::{header, RedirectPolicy};
 extern crate crypto;
 extern crate env_logger;
-use crypto::digest::Digest;
-use crypto::sha1::Sha1;
 extern crate structopt;
 use structopt::StructOpt;
 extern crate chrono;
