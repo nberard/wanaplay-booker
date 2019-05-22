@@ -12,6 +12,7 @@ RUN apt-get update \
 
 COPY python_telegram_bot /opt/
 COPY config.py.dist /opt/config.py
+COPY invite.squash.ics.template /opt/
 COPY bot.py /opt/
 WORKDIR /opt
 CMD python bot.py
