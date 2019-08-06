@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import config
@@ -158,16 +159,20 @@ def accept(update, context):
         with open("invite.squash.ics.template", "r") as template_handle, open(
             "invite.squash.ics", "w"
         ) as to_send_handle:
+            start_str = start.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
+            end_str = end.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
+            id = hashlib.md5("{}-{}".format(start_str, end_str).encode('utf-8')).hexdigest()
             data = (
                 template_handle.read()
                 .replace(
                     "{{start}}",
-                    start.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S"),
+                    start_str,
                 )
                 .replace(
                     "{{end}}",
-                    end.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S"),
+                    end_str,
                 )
+                .replace("{{id}}", id)
             )
             to_send_handle.write(data)
         response = requests.post(
