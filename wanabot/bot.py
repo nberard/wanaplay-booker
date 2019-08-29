@@ -1,8 +1,23 @@
 import hashlib
 import json
+from collections import defaultdict
+
+from defaultlist import defaultlist
+from telegram import (
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 
 import config
-from telegram.ext import Updater, Handler, CommandHandler, MessageHandler, Filters
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    MessageHandler,
+    Filters,
+    CallbackQueryHandler,
+)
 import logging
 import requests
 from datetime import datetime, timedelta, timezone
@@ -22,20 +37,34 @@ def get_bookings():
     return bookings
 
 
-def bookings(update, context):
-    bookings = get_bookings()
+def get_bookings_md(bookings):
     if len(bookings) == 0:
         text = "no bookings found"
     else:
         text = ""
-        cpt = 0
         for booking in bookings:
-            cpt += 1
-            text += "({}) {} at {} on court {}\n".format(
-                cpt, booking["date"], booking["court_time"], booking["court_number"]
+            text += "{} at {} |   {}  \n".format(
+                datetime.strptime(booking["date"], "%d/%m/%Y").strftime("%a %d/%m"),
+                booking["court_time"],
+                booking["court_number"],
             )
+    return text
 
-    context.bot.send_message(chat_id=update.message.chat_id, text=text)
+
+def bookings(update, context):
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="""
+<pre>
+     Booking       | Court #
+ ----------------- | --------
+"""
+        + get_bookings_md(get_bookings())
+        + """
+</pre>
+""",
+        parse_mode="html",
+    )
 
 
 bookings_handler = CommandHandler("bookings", bookings)
@@ -138,15 +167,72 @@ def cancel(update, context):
     handle_response(context.bot, response, update.message.chat_id, usage)
 
 
+class InlineKeyboardFormatter:
+    ROW_MAX_LENGTH = 44
+
+    def __init__(self):
+        self.inline_keyboard = defaultlist(list)
+        self.current_row = 0
+        self.current_row_length = 0
+
+    def add_ik_button(self, text, data):
+        row_new_idx = self.current_row_length + len(text)
+        print(
+            f"start current_row={self.current_row} / current_row_length={self.current_row_length} / row_new_idx={row_new_idx}"
+        )
+        if row_new_idx > self.ROW_MAX_LENGTH:
+            self.current_row += 1
+            self.current_row_length = len(text)
+        else:
+            self.current_row_length = row_new_idx
+        print(
+            f"add current_row={self.current_row} / current_row_length={self.current_row_length}"
+        )
+        self.inline_keyboard[self.current_row].append(
+            InlineKeyboardButton(text, callback_data=json.dumps(data))
+        )
+
+
 cancel_handler = CommandHandler("cancel", cancel)
 dispatcher.add_handler(cancel_handler)
 
 
-def accept(update, context):
-    usage = "/accept [court_1] [[court_2]...[court_n]] (ex: /accept 1 2)"
+def accept_dialog(update, context):
+    ik_formatter = InlineKeyboardFormatter()
     bookings = get_bookings()
+    bookings_by_day = defaultdict(list)
+    for idx, booking in enumerate(bookings):
+        bookings_by_day[booking["date"]].append(booking)
+    print(len(bookings_by_day))
+    for date, day_bookings in bookings_by_day.items():
+        booking_date = datetime.strptime(date, "%d/%m/%Y").strftime("%a %d")
+        start = min(day_bookings, key=lambda dict: dict["court_time"])["court_time"]
+        end = (
+            datetime.strptime(
+                max(day_bookings, key=lambda dict: dict["court_time"])["court_time"],
+                "%H:%M",
+            )
+            + timedelta(minutes=40)
+        ).strftime("%H:%M")
+        ik_formatter.add_ik_button(
+            "{} {}->{}".format(booking_date, start, end),
+            {
+                "action": "accept",
+                "bookings": [booking["id"] for booking in day_bookings],
+            },
+        )
+
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="chose a court period to get invite",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
+
+
+def accept_callback(bot, chat_id, ids):
+    usage = "/accept [court_1] [[court_2]...[court_n]] (ex: /accept 1 2)"
+    bookings = [booking for booking in get_bookings() if booking["id"] in ids]
     try:
-        bookings = [bookings[int(i) - 1] for i in context.args]
         logger.info(bookings)
         start = min(bookings, key=lambda dict: dict["court_time"])
         end = max(bookings, key=lambda dict: dict["court_time"])
@@ -161,35 +247,29 @@ def accept(update, context):
         ) as to_send_handle:
             start_str = start.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
             end_str = end.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
-            id = hashlib.md5("{}-{}".format(start_str, end_str).encode('utf-8')).hexdigest()
+            id = hashlib.md5(
+                "{}-{}".format(start_str, end_str).encode("utf-8")
+            ).hexdigest()
             data = (
                 template_handle.read()
-                .replace(
-                    "{{start}}",
-                    start_str,
-                )
-                .replace(
-                    "{{end}}",
-                    end_str,
-                )
+                .replace("{{start}}", start_str)
+                .replace("{{end}}", end_str)
                 .replace("{{id}}", id)
             )
             to_send_handle.write(data)
         response = requests.post(
             "https://api.telegram.org/bot{}/sendDocument".format(config.token),
             files={"document": open("invite.squash.ics", "rb")},
-            data={"chat_id": update.message.chat_id},
+            data={"chat_id": chat_id},
         )
-        handle_response(context.bot, response, update.message.chat_id, usage)
+        handle_response(bot, response, chat_id, usage)
     except IndexError:
-        context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text="wrong court numbers, usage: \n{}".format(usage),
+        bot.send_message(
+            chat_id=chat_id, text="wrong court numbers, usage: \n{}".format(usage)
         )
-        return
 
 
-accept_handler = CommandHandler("accept", accept)
+accept_handler = CommandHandler("accept", accept_dialog)
 dispatcher.add_handler(accept_handler)
 
 
@@ -202,11 +282,25 @@ echo_handler = MessageHandler(Filters.text, echo)
 dispatcher.add_handler(echo_handler)
 
 
+def callback_manager(update, callback_context):
+    data = json.loads(update.callback_query["data"])
+    if data["action"] == "accept":
+        accept_callback(
+            callback_context.bot,
+            update.callback_query.message.chat.id,
+            data["bookings"],
+        )
+
+
+callback_query_handler = CallbackQueryHandler(callback_manager)
+dispatcher.add_handler(callback_query_handler)
+
+
 def help(update, context):
-    logger.info('chat_id={}'.format(update.message.chat_id))
+    logger.info("chat_id={}".format(update.message.chat_id))
     help_text = """
     commands availables:
-    /accept [court_1] [[court_2]...[court_n]] -> accept courts attending
+    /accept -> accept court(s) attending
     /add [day] [court_time] -> create a bot for day of week [day] at [court_time]  
     /bookings -> display all bookings  
     /bots -> display all bots and their statuses
