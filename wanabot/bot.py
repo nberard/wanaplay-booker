@@ -70,32 +70,45 @@ def bookings(update, context):
 bookings_handler = CommandHandler("bookings", bookings)
 dispatcher.add_handler(bookings_handler)
 
-
-def bots(update, context):
-    response = requests.get("{}/bots".format(config.booker_api))
-    bots = json.loads(response.content)
+def get_bots_md(bots):
     if len(bots) == 0:
         text = "no bots found"
     else:
         text = ""
         for bot in bots:
-            text += "{}: {} at {} ({})\n".format(
-                bot["name"], bot["week_day"], bot["court_time"], bot["status"]
+            text += "{} | {}\n".format(
+                bot["name"].ljust(18, ' '), ' ☑ ' if bot["status"] == 'Running' else ' ☐ '
             )
+    return text
 
-    context.bot.send_message(chat_id=update.message.chat_id, text=text)
+def bots(update, context):
+    response = requests.get("{}/bots".format(config.booker_api))
+    bots = json.loads(response.content)
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="""
+<pre>
+       Name        | Status
+ ----------------- | ------
+"""
+         + get_bots_md(bots)
+         + """
+</pre>
+    """,
+        parse_mode="html",
+    )
 
 
 bots_handler = CommandHandler("bots", bots)
 dispatcher.add_handler(bots_handler)
 
 
-def handle_response(bot, response, chat_id, usage):
+def handle_response(bot, response, chat_id):
     print("response code = {}".format(response.status_code))
     status = (
         "ok"
         if response.status_code >= 200 and response.status_code < 300
-        else "ko, usage: \n{}".format(usage)
+        else "ko"
     )
     bot.send_message(chat_id=chat_id, text=status)
 
@@ -152,20 +165,6 @@ delete_handler = CommandHandler("delete", delete)
 dispatcher.add_handler(delete_handler)
 
 
-def cancel(update, context):
-    usage = "/cancel [booking_number] (ex: /cancel 1)"
-    logger.info(context.args)
-    if len(context.args) != 1:
-        context.bot.send_message(
-            chat_id=update.message.chat_id, text="ko: usage: \n{}".format(usage)
-        )
-        return
-    idx = context.args[0]
-    bookings = get_bookings()
-    booking_id = bookings[int(idx) - 1]["id"]
-    response = requests.delete("{}/bookings/{}".format(config.booker_api, booking_id))
-    handle_response(context.bot, response, update.message.chat_id, usage)
-
 
 class InlineKeyboardFormatter:
     ROW_MAX_LENGTH = 44
@@ -193,11 +192,25 @@ class InlineKeyboardFormatter:
         )
 
 
-cancel_handler = CommandHandler("cancel", cancel)
+def cancel_dialog(update, context):
+    inline_keyboard = list_bookings_selection("cancel")
+
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="chose a booking to cancel",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_keyboard),
+    )
+
+def cancel_callback(bot, chat_id, booking_id):
+    response = requests.delete("{}/bookings/{}".format(config.booker_api, booking_id))
+    handle_response(bot, response, chat_id)
+
+
+
+cancel_handler = CommandHandler("cancel", cancel_dialog)
 dispatcher.add_handler(cancel_handler)
 
-
-def accept_dialog(update, context):
+def list_bookings_selection(action):
     ik_formatter = InlineKeyboardFormatter()
     bookings = get_bookings()
     bookings_by_day = defaultdict(list)
@@ -208,65 +221,63 @@ def accept_dialog(update, context):
         booking_date = datetime.strptime(date, "%d/%m/%Y").strftime("%a %d")
         start = min(day_bookings, key=lambda dict: dict["court_time"])["court_time"]
         end = (
-            datetime.strptime(
-                max(day_bookings, key=lambda dict: dict["court_time"])["court_time"],
-                "%H:%M",
-            )
-            + timedelta(minutes=40)
+                datetime.strptime(
+                    max(day_bookings, key=lambda dict: dict["court_time"])["court_time"],
+                    "%H:%M",
+                )
+                + timedelta(minutes=40)
         ).strftime("%H:%M")
         ik_formatter.add_ik_button(
             "{} {}->{}".format(booking_date, start, end),
             {
-                "action": "accept",
+                "action": action,
                 "bookings": [booking["id"] for booking in day_bookings],
             },
         )
+    return ik_formatter.inline_keyboard
+
+def accept_dialog(update, context):
+    inline_keyboard = list_bookings_selection("accept")
 
     context.bot.send_message(
         chat_id=update.message.chat_id,
         text="chose a court period to get invite",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_keyboard),
     )
 
 
 def accept_callback(bot, chat_id, ids):
-    usage = "/accept [court_1] [[court_2]...[court_n]] (ex: /accept 1 2)"
     bookings = [booking for booking in get_bookings() if booking["id"] in ids]
-    try:
-        logger.info(bookings)
-        start = min(bookings, key=lambda dict: dict["court_time"])
-        end = max(bookings, key=lambda dict: dict["court_time"])
-        start = datetime.strptime(
-            "{} {}".format(start["date"], start["court_time"]), "%d/%m/%Y %H:%M"
+    logger.info(bookings)
+    start = min(bookings, key=lambda dict: dict["court_time"])
+    end = max(bookings, key=lambda dict: dict["court_time"])
+    start = datetime.strptime(
+        "{} {}".format(start["date"], start["court_time"]), "%d/%m/%Y %H:%M"
+    )
+    end = datetime.strptime(
+        "{} {}".format(end["date"], end["court_time"]), "%d/%m/%Y %H:%M"
+    ) + timedelta(minutes=40)
+    with open("invite.squash.ics.template", "r") as template_handle, open(
+        "invite.squash.ics", "w"
+    ) as to_send_handle:
+        start_str = start.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
+        end_str = end.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
+        id = hashlib.md5(
+            "{}-{}".format(start_str, end_str).encode("utf-8")
+        ).hexdigest()
+        data = (
+            template_handle.read()
+            .replace("{{start}}", start_str)
+            .replace("{{end}}", end_str)
+            .replace("{{id}}", id)
         )
-        end = datetime.strptime(
-            "{} {}".format(end["date"], end["court_time"]), "%d/%m/%Y %H:%M"
-        ) + timedelta(minutes=40)
-        with open("invite.squash.ics.template", "r") as template_handle, open(
-            "invite.squash.ics", "w"
-        ) as to_send_handle:
-            start_str = start.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
-            end_str = end.replace(tzinfo=timezone.utc).strftime("%Y%m%dT%H%M%S")
-            id = hashlib.md5(
-                "{}-{}".format(start_str, end_str).encode("utf-8")
-            ).hexdigest()
-            data = (
-                template_handle.read()
-                .replace("{{start}}", start_str)
-                .replace("{{end}}", end_str)
-                .replace("{{id}}", id)
-            )
-            to_send_handle.write(data)
-        response = requests.post(
-            "https://api.telegram.org/bot{}/sendDocument".format(config.token),
-            files={"document": open("invite.squash.ics", "rb")},
-            data={"chat_id": chat_id},
-        )
-        handle_response(bot, response, chat_id, usage)
-    except IndexError:
-        bot.send_message(
-            chat_id=chat_id, text="wrong court numbers, usage: \n{}".format(usage)
-        )
+        to_send_handle.write(data)
+    response = requests.post(
+        "https://api.telegram.org/bot{}/sendDocument".format(config.token),
+        files={"document": open("invite.squash.ics", "rb")},
+        data={"chat_id": chat_id},
+    )
+    handle_response(bot, response, chat_id)
 
 
 accept_handler = CommandHandler("accept", accept_dialog)
@@ -289,6 +300,12 @@ def callback_manager(update, callback_context):
             callback_context.bot,
             update.callback_query.message.chat.id,
             data["bookings"],
+        )
+    elif data["action"] == "cancel":
+        cancel_callback(
+            callback_context.bot,
+            update.callback_query.message.chat.id,
+            data["bookings"][0],
         )
 
 
