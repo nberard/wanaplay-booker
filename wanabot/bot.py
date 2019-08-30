@@ -18,7 +18,7 @@ from telegram.ext import (
 )
 import logging
 import requests
-from datetime import datetime, timedelta, timezone, time, date
+from datetime import datetime, timedelta, timezone
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -31,7 +31,6 @@ dispatcher = updater.dispatcher
 def get_bookings():
     response = requests.get("{}/bookings".format(config.booker_api))
     bookings = json.loads(response.content)
-    print(bookings)
     return bookings
 
 
@@ -77,7 +76,7 @@ def get_bots_md(bots):
         for bot in bots:
             text += "{} | {}\n".format(
                 bot["name"].ljust(19, " "),
-                " ☑ " if bot["status"] == "Running" else " ☐ ",
+                " ☑ " if bot["status"] != "Created" else " ☐ ",
             )
     return text
 
@@ -109,10 +108,11 @@ dispatcher.add_handler(bots_handler)
 
 
 def handle_response(bot, response, chat_id):
-    print("response code = {}".format(response.status_code))
     status = (
         "ok" if response.status_code >= 200 and response.status_code < 300 else "ko"
     )
+    if status == "ko":
+        logger.error(response.content)
     bot.send_message(chat_id=chat_id, text=status)
 
 
@@ -125,7 +125,7 @@ deploy_handler = CommandHandler("deploy", deploy)
 dispatcher.add_handler(deploy_handler)
 
 
-def add(update, context):
+def add_dialog(update, context):
     ik_formatter = InlineKeyboardFormatter(3)
     for day in [
         "Monday",
@@ -166,7 +166,6 @@ def choose_slot_callback(bot, chat_id, day):
 
 
 def add_bot_callback(bot, chat_id, bot_name):
-    print(bot_name)
     bot_parts = bot_name.split("_")
     payload = {
         "name": bot_name,
@@ -174,16 +173,15 @@ def add_bot_callback(bot, chat_id, bot_name):
         "court_time": "{}:{}".format(bot_parts[2], bot_parts[3]),
         "status": "Created",
     }
-    print(payload)
     response = requests.post("{}/bots".format(config.booker_api), json=payload)
     handle_response(bot, response, chat_id)
 
 
-add_handler = CommandHandler("add", add)
+add_handler = CommandHandler("add", add_dialog)
 dispatcher.add_handler(add_handler)
 
 
-def delete(update, context):
+def delete_dialog(update, context):
     ik_formatter = InlineKeyboardFormatter(2)
     bots = get_bots()
     for bot in bots:
@@ -198,12 +196,11 @@ def delete(update, context):
 
 
 def delete_callback(bot, chat_id, bot_name):
-    print(bot_name)
     response = requests.delete("{}/bots/{}".format(config.booker_api, bot_name))
     handle_response(bot, response, chat_id)
 
 
-delete_handler = CommandHandler("delete", delete)
+delete_handler = CommandHandler("delete", delete_dialog)
 dispatcher.add_handler(delete_handler)
 
 
@@ -219,9 +216,6 @@ class InlineKeyboardFormatter:
         self.items_on_current_row = 0
 
     def add_ik_button(self, text, data):
-        # print(
-        #     f"start current_row={self.current_row} / items_on_current_row={self.items_on_current_row}"
-        # )
         if self.items_on_current_row >= self.items_max_per_row:
             self.current_row += 1
             self.items_on_current_row = 0
@@ -256,7 +250,6 @@ def list_bookings_selection(action):
     bookings_by_day = defaultdict(list)
     for idx, booking in enumerate(bookings):
         bookings_by_day[booking["date"]].append(booking)
-    print(len(bookings_by_day))
     for date, day_bookings in bookings_by_day.items():
         booking_date = datetime.strptime(date, "%d/%m/%Y").strftime("%a %d")
         start = min(day_bookings, key=lambda dict: dict["court_time"])["court_time"]
@@ -331,6 +324,7 @@ dispatcher.add_handler(echo_handler)
 
 def callback_manager(update, callback_context):
     data = json.loads(update.callback_query["data"])
+    logger.info('callback_manager for {}'.format(data))
     if data["action"] == "accept":
         accept_callback(
             callback_context.bot,
@@ -360,6 +354,7 @@ def callback_manager(update, callback_context):
                 update.callback_query.message.chat.id,
                 data["bot_name"],
             )
+    callback_context.bot.delete_message(update.callback_query.message.chat.id, update.callback_query.message.message_id)
 
 
 callback_query_handler = CallbackQueryHandler(callback_manager)
@@ -369,14 +364,14 @@ dispatcher.add_handler(callback_query_handler)
 def help(update, context):
     logger.info("chat_id={}".format(update.message.chat_id))
     help_text = """
-    accept - accept court(s) attending
-    add - create a bot for day of week at specific slot time 
-    bookings - display all bookings  
-    bots - display all bots and their statuses
-    cancel - cancel a booking
-    delete - delete a bot  
-    deploy - start all the created bots  
-    help - display this message
+accept - accept court(s) attending
+add - create a bot
+bookings - display all bookings  
+bots - display all bots
+cancel - cancel a booking
+delete - delete a bot  
+deploy - start all the created bots  
+help - display this message
     """
     context.bot.send_message(chat_id=update.message.chat_id, text=help_text)
 

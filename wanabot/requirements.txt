@@ -1,3 +1,3 @@
-requests
+requests==2.22.0
 python-telegram-bot==12.0.0b1
-defaultlist
+defaultlist==1.0.0
