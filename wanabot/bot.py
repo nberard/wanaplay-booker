@@ -1,3 +1,4 @@
+import calendar
 import hashlib
 import json
 from collections import defaultdict
@@ -20,7 +21,7 @@ from telegram.ext import (
 )
 import logging
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time, date
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -77,7 +78,7 @@ def get_bots_md(bots):
         text = ""
         for bot in bots:
             text += "{} | {}\n".format(
-                bot["name"].ljust(18, ' '), ' ☑ ' if bot["status"] == 'Running' else ' ☐ '
+                bot["name"].ljust(19, ' '), ' ☑ ' if bot["status"] == 'Running' else ' ☐ '
             )
     return text
 
@@ -88,8 +89,8 @@ def bots(update, context):
         chat_id=update.message.chat_id,
         text="""
 <pre>
-       Name        | Status
- ----------------- | ------
+       Name         | Status
+ ------------------ | ------
 """
          + get_bots_md(bots)
          + """
@@ -124,24 +125,41 @@ dispatcher.add_handler(deploy_handler)
 
 
 def add(update, context):
-    usage = "/add [day] [court_time] (ex: /add monday 19:20)"
-    logger.info(context.args)
-    if len(context.args) != 2:
-        context.bot.send_message(
-            chat_id=update.message.chat_id, text="ko: usage: \n{}".format(usage)
-        )
-        return
-    day = context.args[0]
-    court_time = context.args[1]
+    ik_formatter = InlineKeyboardFormatter(3)
+    for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']:
+        ik_formatter.add_ik_button(day, {'action': "add", "day": day.lower()})
+
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="choose a day",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
+
+def choose_slot_callback(bot, chat_id, day):
+    ik_formatter = InlineKeyboardFormatter(6)
+    slot_time = datetime(1,1,1,9,0,0)
+    while slot_time <= datetime(1,1,1,23,0,0):
+        ik_formatter.add_ik_button(slot_time.strftime('%H:%M'), {'action': "add", "bot_name": "bot_{}_{}".format(day, slot_time.strftime('%H_%M'))})
+        slot_time = slot_time + timedelta(minutes=40)
+
+    bot.send_message(
+        chat_id=chat_id,
+        text="choose a time slot",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
+
+def add_bot_callback(bot, chat_id, bot_name):
+    print(bot_name)
+    bot_parts = bot_name.split('_')
     payload = {
-        "name": "bot_{}_{}".format(day, court_time).replace(":", "_"),
-        "week_day": day[0].upper() + day[1:],
-        "court_time": court_time,
+        "name": bot_name,
+        "week_day": bot_parts[1].capitalize(),
+        "court_time": '{}:{}'.format(bot_parts[2], bot_parts[3]),
         "status": "Created",
     }
     print(payload)
     response = requests.post("{}/bots".format(config.booker_api), json=payload)
-    handle_response(context.bot, response, update.message.chat_id, usage)
+    handle_response(bot, response, chat_id)
 
 
 add_handler = CommandHandler("add", add)
@@ -167,29 +185,27 @@ dispatcher.add_handler(delete_handler)
 
 
 class InlineKeyboardFormatter:
-    ROW_MAX_LENGTH = 44
-
-    def __init__(self):
+    def __init__(self, items_max_per_row):
         self.inline_keyboard = defaultlist(list)
         self.current_row = 0
-        self.current_row_length = 0
+        self.items_max_per_row = items_max_per_row
+        self.items_on_current_row = 0
+
+    def go_next_line(self):
+        self.current_row+=1
+        self.items_on_current_row = 0
 
     def add_ik_button(self, text, data):
-        row_new_idx = self.current_row_length + len(text)
         print(
-            f"start current_row={self.current_row} / current_row_length={self.current_row_length} / row_new_idx={row_new_idx}"
+            f"start current_row={self.current_row} / items_on_current_row={self.items_on_current_row}"
         )
-        if row_new_idx > self.ROW_MAX_LENGTH:
+        if self.items_on_current_row >= self.items_max_per_row:
             self.current_row += 1
-            self.current_row_length = len(text)
-        else:
-            self.current_row_length = row_new_idx
-        print(
-            f"add current_row={self.current_row} / current_row_length={self.current_row_length}"
-        )
+            self.items_on_current_row = 0
         self.inline_keyboard[self.current_row].append(
             InlineKeyboardButton(text, callback_data=json.dumps(data))
         )
+        self.items_on_current_row+=1
 
 
 def cancel_dialog(update, context):
@@ -197,7 +213,7 @@ def cancel_dialog(update, context):
 
     context.bot.send_message(
         chat_id=update.message.chat_id,
-        text="chose a booking to cancel",
+        text="choose a booking to cancel",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_keyboard),
     )
 
@@ -211,7 +227,7 @@ cancel_handler = CommandHandler("cancel", cancel_dialog)
 dispatcher.add_handler(cancel_handler)
 
 def list_bookings_selection(action):
-    ik_formatter = InlineKeyboardFormatter()
+    ik_formatter = InlineKeyboardFormatter(2)
     bookings = get_bookings()
     bookings_by_day = defaultdict(list)
     for idx, booking in enumerate(bookings):
@@ -241,7 +257,7 @@ def accept_dialog(update, context):
 
     context.bot.send_message(
         chat_id=update.message.chat_id,
-        text="chose a court period to get invite",
+        text="choose a court period to get invite",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=inline_keyboard),
     )
 
@@ -307,6 +323,19 @@ def callback_manager(update, callback_context):
             update.callback_query.message.chat.id,
             data["bookings"][0],
         )
+    elif data["action"] == "add":
+        if 'day' in data:
+            choose_slot_callback(
+            callback_context.bot,
+            update.callback_query.message.chat.id,
+            data["day"],
+        )
+        elif "bot_name" in data:
+            add_bot_callback(
+                callback_context.bot,
+                update.callback_query.message.chat.id,
+                data["bot_name"],
+            )
 
 
 callback_query_handler = CallbackQueryHandler(callback_manager)
