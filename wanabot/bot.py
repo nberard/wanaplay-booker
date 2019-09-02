@@ -1,12 +1,10 @@
 import hashlib
 import json
+import sys
 from collections import defaultdict
 
 from defaultlist import defaultlist
-from telegram import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
 from telegram.ext import (
@@ -107,18 +105,20 @@ bots_handler = CommandHandler("bots", bots)
 dispatcher.add_handler(bots_handler)
 
 
-def handle_response(bot, response, chat_id):
+def handle_response(response, action):
     status = (
         "ok" if response.status_code >= 200 and response.status_code < 300 else "ko"
     )
     if status == "ko":
         logger.error(response.content)
-    bot.send_message(chat_id=chat_id, text=status)
+    return "{} for {}".format(status, action)
 
 
 def deploy(update, context):
     response = requests.post("{}/bots/actions/deploy".format(config.booker_api))
-    handle_response(context.bot, response, update.message.chat_id)
+    context.bot.send_message(
+        chat_id=update.message.chat_id, text=handle_response(response, "deploy")
+    )
 
 
 deploy_handler = CommandHandler("deploy", deploy)
@@ -136,7 +136,7 @@ def add_dialog(update, context):
         "Saturday",
         "Sunday",
     ]:
-        ik_formatter.add_ik_button(day, {"action": "add", "day": day.lower()})
+        ik_formatter.add_ik_button(day, "add_1", day.lower())
 
     context.bot.send_message(
         chat_id=update.message.chat_id,
@@ -145,27 +145,26 @@ def add_dialog(update, context):
     )
 
 
-def choose_slot_callback(bot, chat_id, day):
+def add_1_callback(bot, chat_id, day):
     ik_formatter = InlineKeyboardFormatter(6)
     slot_time = datetime(1, 1, 1, 9, 0, 0)
     while slot_time <= datetime(1, 1, 1, 23, 0, 0):
         ik_formatter.add_ik_button(
             slot_time.strftime("%H:%M"),
-            {
-                "action": "add",
-                "bot_name": "bot_{}_{}".format(day, slot_time.strftime("%H_%M")),
-            },
+            "add_2",
+            "bot_{}_{}".format(day, slot_time.strftime("%H_%M")),
         )
         slot_time = slot_time + timedelta(minutes=40)
-
+    header = "choose a time slot"
     bot.send_message(
         chat_id=chat_id,
-        text="choose a time slot",
+        text=header,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
     )
+    return header
 
 
-def add_bot_callback(bot, chat_id, bot_name):
+def add_2_callback(bot, chat_id, bot_name):
     bot_parts = bot_name.split("_")
     payload = {
         "name": bot_name,
@@ -174,7 +173,7 @@ def add_bot_callback(bot, chat_id, bot_name):
         "status": "Created",
     }
     response = requests.post("{}/bots".format(config.booker_api), json=payload)
-    handle_response(bot, response, chat_id)
+    return handle_response(response, "add " + bot_name)
 
 
 add_handler = CommandHandler("add", add_dialog)
@@ -185,9 +184,7 @@ def delete_dialog(update, context):
     ik_formatter = InlineKeyboardFormatter(2)
     bots = get_bots()
     for bot in bots:
-        ik_formatter.add_ik_button(
-            bot["name"], {"action": "delete", "bot_name": bot["name"]}
-        )
+        ik_formatter.add_ik_button(bot["name"], "delete", bot["name"])
     context.bot.send_message(
         chat_id=update.message.chat_id,
         text="choose a bot to delete",
@@ -197,7 +194,7 @@ def delete_dialog(update, context):
 
 def delete_callback(bot, chat_id, bot_name):
     response = requests.delete("{}/bots/{}".format(config.booker_api, bot_name))
-    handle_response(bot, response, chat_id)
+    return handle_response(response, "delete " + bot_name)
 
 
 delete_handler = CommandHandler("delete", delete_dialog)
@@ -215,12 +212,14 @@ class InlineKeyboardFormatter:
         self.current_row += 1
         self.items_on_current_row = 0
 
-    def add_ik_button(self, text, data):
+    def add_ik_button(self, text, action, data):
         if self.items_on_current_row >= self.items_max_per_row:
             self.current_row += 1
             self.items_on_current_row = 0
         self.inline_keyboard[self.current_row].append(
-            InlineKeyboardButton(text, callback_data=json.dumps(data))
+            InlineKeyboardButton(
+                text, callback_data=json.dumps({"a": action, "d": data})
+            )
         )
         self.items_on_current_row += 1
 
@@ -237,38 +236,65 @@ def cancel_dialog(update, context):
 
 def cancel_callback(bot, chat_id, booking_id):
     response = requests.delete("{}/bookings/{}".format(config.booker_api, booking_id))
-    handle_response(bot, response, chat_id)
+    return handle_response(response, "cancel " + booking_id)
 
 
 cancel_handler = CommandHandler("cancel", cancel_dialog)
 dispatcher.add_handler(cancel_handler)
 
 
-def list_bookings_selection(action):
+def list_bookings_selection_grouped(action):
     ik_formatter = InlineKeyboardFormatter(2)
     bookings = get_bookings()
     bookings_by_day = defaultdict(list)
     for idx, booking in enumerate(bookings):
         bookings_by_day[booking["date"]].append(booking)
+    print(bookings_by_day)
     for date, day_bookings in bookings_by_day.items():
-        booking_date = datetime.strptime(date, "%d/%m/%Y").strftime("%a %d")
-        start = min(day_bookings, key=lambda dict: dict["court_time"])["court_time"]
-        end = (
-            datetime.strptime(
-                max(day_bookings, key=lambda dict: dict["court_time"])["court_time"],
-                "%H:%M",
+        if len(day_bookings) == 1:
+            ik_formatter.add_ik_button(
+                "{} at {}".format(
+                    day_bookings[0]["date"], day_bookings[0]["court_time"]
+                ),
+                action,
+                [day_bookings[0]["id"]],
             )
-            + timedelta(minutes=40)
-        ).strftime("%H:%M")
+        else:
+
+            booking_date = datetime.strptime(date, "%d/%m/%Y").strftime("%a %d")
+            start = min(day_bookings, key=lambda dict: dict["court_time"])["court_time"]
+            end = (
+                datetime.strptime(
+                    max(day_bookings, key=lambda dict: dict["court_time"])[
+                        "court_time"
+                    ],
+                    "%H:%M",
+                )
+                + timedelta(minutes=40)
+            ).strftime("%H:%M")
+            ik_formatter.add_ik_button(
+                "{} {}->{}".format(booking_date, start, end),
+                action,
+                [booking["id"] for booking in day_bookings],
+            )
+            print(ik_formatter.inline_keyboard)
+    return ik_formatter.inline_keyboard
+
+
+def list_bookings_selection(action):
+    ik_formatter = InlineKeyboardFormatter(2)
+    bookings = get_bookings()
+    for booking in bookings:
         ik_formatter.add_ik_button(
-            "{} {}->{}".format(booking_date, start, end),
-            {"action": action, "bookings": [booking["id"] for booking in day_bookings]},
+            "{} at {}".format(booking["date"], booking["court_time"]),
+            action,
+            booking["id"],
         )
     return ik_formatter.inline_keyboard
 
 
 def accept_dialog(update, context):
-    inline_keyboard = list_bookings_selection("accept")
+    inline_keyboard = list_bookings_selection_grouped("accept")
 
     context.bot.send_message(
         chat_id=update.message.chat_id,
@@ -306,7 +332,7 @@ def accept_callback(bot, chat_id, ids):
         files={"document": open("invite.squash.ics", "rb")},
         data={"chat_id": chat_id},
     )
-    handle_response(bot, response, chat_id)
+    return handle_response(response, "accept {} -> {}".format(start_str, end_str))
 
 
 accept_handler = CommandHandler("accept", accept_dialog)
@@ -323,38 +349,25 @@ dispatcher.add_handler(echo_handler)
 
 
 def callback_manager(update, callback_context):
+    logger.info("callback_manager for {}".format(update.callback_query))
     data = json.loads(update.callback_query["data"])
-    logger.info('callback_manager for {}'.format(data))
-    if data["action"] == "accept":
-        accept_callback(
-            callback_context.bot,
-            update.callback_query.message.chat.id,
-            data["bookings"],
+    logger.info("callback_manager for {}".format(data))
+    try:
+        message = getattr(sys.modules[__name__], "%s_callback" % data["a"])(
+            callback_context.bot, update.callback_query.message.chat.id, data["d"]
         )
-    elif data["action"] == "cancel":
-        cancel_callback(
-            callback_context.bot,
-            update.callback_query.message.chat.id,
-            data["bookings"][0],
+        callback_context.bot.answer_callback_query(
+            update.callback_query["id"], text=message
         )
-    elif data["action"] == "delete":
-        delete_callback(
-            callback_context.bot,
+        callback_context.bot.delete_message(
             update.callback_query.message.chat.id,
-            data["bot_name"],
+            update.callback_query.message.message_id,
         )
-    elif data["action"] == "add":
-        if "day" in data:
-            choose_slot_callback(
-                callback_context.bot, update.callback_query.message.chat.id, data["day"]
-            )
-        elif "bot_name" in data:
-            add_bot_callback(
-                callback_context.bot,
-                update.callback_query.message.chat.id,
-                data["bot_name"],
-            )
-    callback_context.bot.delete_message(update.callback_query.message.chat.id, update.callback_query.message.message_id)
+    except Exception as e:
+        logger.error(str(e))
+        callback_context.bot.answer_callback_query(
+            update.callback_query["id"], text="unknown action: " + str(e)
+        )
 
 
 callback_query_handler = CallbackQueryHandler(callback_manager)
