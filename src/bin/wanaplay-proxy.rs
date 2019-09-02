@@ -195,24 +195,33 @@ fn get_bot(id: String) -> Option<Json<Watcher>> {
 
 #[delete("/bots/<id>")]
 fn remove_bot(id: String) -> Status {
+    let bot = get_bots()
+        .into_iter()
+        .find(|bot| bot.name == id).unwrap();
     let mut compose = Compose::get();
     let removed = compose.remove_service(&id);
     match removed {
         Ok(_) => {
-            let output = Command::new("docker")
-                .arg("-H")
-                .arg("unix:///var/run/docker.sock")
-                .arg("service")
-                .arg("rm")
-                .arg(format!("wanaplay_{}", id.clone()))
-                .output()
-                .expect("failed to execute process");
-            match output.status.success() {
-                true => {
-                    compose.update();
-                    Status::NoContent
+            if bot.status == "Created" {
+                compose.update();
+                return Status::NoContent
+            }
+            else {
+                    let output = Command::new("docker")
+                    .arg("-H")
+                    .arg("unix:///var/run/docker.sock")
+                    .arg("service")
+                    .arg("rm")
+                    .arg(format!("wanaplay_{}", id.clone()))
+                    .output()
+                    .expect("failed to execute process");
+                match output.status.success() {
+                    true => {
+                        compose.update();
+                        return Status::NoContent
+                    }
+                    false => Status::InternalServerError,
                 }
-                false => Status::InternalServerError,
             }
         }
         Err(_) => Status::NotFound,
