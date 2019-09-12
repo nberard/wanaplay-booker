@@ -12,7 +12,7 @@ use crypto::digest::Digest;
 use crypto::sha1::Sha1;
 use regex::Regex;
 use select::document::Document;
-use select::predicate::Class;
+use select::predicate::{Attr, Class};
 use std::env;
 #[macro_use]
 extern crate serde_derive;
@@ -87,6 +87,54 @@ pub fn authenticate(login: String, crypted_password: String) -> Result<reqwest::
         .send()
         .unwrap();
     Ok(client)
+}
+
+#[derive(Debug)]
+pub struct UserInfos {
+    id: String,
+    name: String,
+}
+
+pub fn get_user_infos(client: &reqwest::Client, reservation_id: &String) -> Result<UserInfos> {
+    let response = client
+        .post(wanaplay_route("reservation/takeReservationShow").as_str())
+        .form(&[("idTspl", reservation_id)])
+        .send()?;
+
+    let document = Document::from_read(response)?;
+    let infos = match document.find(Attr("id", "users_0")).next() {
+        Some(infos) => infos.children().next().unwrap(),
+        None => bail!(format!(
+            "unable to find user infos for reservation {:?}",
+            reservation_id
+        )),
+    };
+    Ok(UserInfos {
+        id: infos.attr("value").unwrap().to_string(),
+        name: infos.text(),
+    })
+}
+
+pub fn do_booking(
+    client: &reqwest::Client,
+    user_infos: &UserInfos,
+    id_booking: &String,
+    date: &NaiveDate,
+) {
+    println!("book");
+    println!("{:?}", id_booking);
+    client
+        .post(wanaplay_route("reservation/takeReservationBase").as_str())
+        .form(&[
+            ("date", date.format("%Y-%m-%d").to_string()),
+            ("idTspl", id_booking.to_string()),
+            ("commit", "Confirmer".to_string()),
+            ("nb_participants", "1".to_string()),
+            ("tab_users_id_0", user_infos.id.clone()),
+            ("tab_users_name_0", user_infos.name.clone()),
+        ])
+        .send()
+        .unwrap();
 }
 
 pub fn get_logged_client() -> Result<reqwest::Client> {

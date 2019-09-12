@@ -21,12 +21,6 @@ pub type Error = failure::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 use wanaplay_booker::*;
 
-#[derive(Debug)]
-struct UserInfos {
-    id: String,
-    name: String,
-}
-
 struct Parameters {
     weekday: Weekday,
     court_time: NaiveTime,
@@ -92,27 +86,6 @@ fn is_openned(client: &reqwest::Client, target_date: NaiveDate) -> bool {
     !response.text().unwrap().contains(forbidden)
 }
 
-fn get_user_infos(client: &reqwest::Client, reservation_id: &String) -> UserInfos {
-    let response = client
-        .post(wanaplay_route("reservation/takeReservationShow").as_str())
-        .form(&[("idTspl", reservation_id)])
-        .send()
-        .unwrap();
-
-    let document = Document::from_read(response).unwrap();
-    let infos = document
-        .find(Attr("id", "users_0"))
-        .next()
-        .unwrap()
-        .children()
-        .next()
-        .unwrap();
-    UserInfos {
-        id: infos.attr("value").unwrap().to_string(),
-        name: infos.text(),
-    }
-}
-
 fn find_book_ids(
     client: &reqwest::Client,
     target_date: NaiveDate,
@@ -146,23 +119,6 @@ fn find_book_ids(
     ids
 }
 
-fn book(client: &reqwest::Client, user_infos: &UserInfos, id_booking: &String, date: &NaiveDate) {
-    println!("book");
-    println!("{:?}", id_booking);
-    client
-        .post(wanaplay_route("reservation/takeReservationBase").as_str())
-        .form(&[
-            ("date", date.format("%Y-%m-%d").to_string()),
-            ("idTspl", id_booking.to_string()),
-            ("commit", "Confirmer".to_string()),
-            ("nb_participants", "1".to_string()),
-            ("tab_users_id_0", user_infos.id.clone()),
-            ("tab_users_name_0", user_infos.name.clone()),
-        ])
-        .send()
-        .unwrap();
-}
-
 fn main() {
     env_logger::init();
     if let Err(err) = run() {
@@ -190,8 +146,8 @@ fn run() -> Result<()> {
     //            4 => ids[1].clone(),
     //            _ => ids[0].clone(),
     //        };
-    //        let user_infos = get_user_infos(&client, &id);
-    //        book(&client, &user_infos, &id, &target_date);
+    //        let user_infos = get_user_infos(&client, &id)?;
+    //        do_booking(&client, &user_infos, &id, &target_date);
     //    }
     loop {
         let now: DateTime<Local> = match env::var("fake_date") {
@@ -219,8 +175,8 @@ fn run() -> Result<()> {
                             4 => ids[1].clone(),
                             _ => ids[0].clone(),
                         };
-                        let user_infos = get_user_infos(&client, &id);
-                        book(&client, &user_infos, &id, &target_date);
+                        let user_infos = get_user_infos(&client, &id)?;
+                        do_booking(&client, &user_infos, &id, &target_date);
                     }
                 } else {
                     println!("sleep for 1 min");

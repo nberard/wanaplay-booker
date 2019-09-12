@@ -13,13 +13,16 @@ extern crate serde_yaml;
 pub type Error = failure::Error;
 use failure::bail;
 use regex::Regex;
-use rocket::http::Status;
+use rocket::http::{RawStr, Status};
 use rocket::response::status;
 use rocket_contrib::json::Json;
 use serde_yaml::from_reader;
 use std::str;
 
-use std::collections::BTreeMap;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+use select::document::Document;
+use select::predicate::{Attr, Class, Name};
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -129,6 +132,12 @@ struct Watcher {
     week_day: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct TimeSlot {
+    from: String,
+    to: String,
+}
+
 impl From<Service> for Watcher {
     fn from(service: Service) -> Self {
         let re = Regex::new(r"wanaplay-booker -c (\d{2}:\d{2}):\d{2} -w (\w+)").unwrap();
@@ -195,19 +204,16 @@ fn get_bot(id: String) -> Option<Json<Watcher>> {
 
 #[delete("/bots/<id>")]
 fn remove_bot(id: String) -> Status {
-    let bot = get_bots()
-        .into_iter()
-        .find(|bot| bot.name == id).unwrap();
+    let bot = get_bots().into_iter().find(|bot| bot.name == id).unwrap();
     let mut compose = Compose::get();
     let removed = compose.remove_service(&id);
     match removed {
         Ok(_) => {
             if bot.status == "Created" {
                 compose.update();
-                return Status::NoContent
-            }
-            else {
-                    let output = Command::new("docker")
+                return Status::NoContent;
+            } else {
+                let output = Command::new("docker")
                     .arg("-H")
                     .arg("unix:///var/run/docker.sock")
                     .arg("service")
@@ -218,7 +224,7 @@ fn remove_bot(id: String) -> Status {
                 match output.status.success() {
                     true => {
                         compose.update();
-                        return Status::NoContent
+                        return Status::NoContent;
                     }
                     false => Status::InternalServerError,
                 }
@@ -293,6 +299,125 @@ fn get_all_bookings() -> Json<Vec<Booking>> {
     Json(bookings)
 }
 
+#[get("/time_slots?<date>")]
+fn get_time_slots(date: &RawStr) -> Json<Vec<String>> {
+    let date_obj = date.as_str().parse::<NaiveDate>().unwrap();
+    let client = get_logged_client().unwrap();
+    let response = client
+        .post(wanaplay_route("reservation/planning2").as_str())
+        .form(&[("date", date_obj.format("%Y-%m-%d").to_string())])
+        .send()
+        .unwrap();
+    let document = Document::from_read(response).unwrap();
+    let time_slots = document
+        .find(Class("creneauLibre"))
+        .map(|node| {
+            let slot = node
+                .children()
+                .next()
+                .unwrap()
+                .children()
+                .next()
+                .unwrap()
+                .text()
+                + ":00";
+            let slot_time = slot.parse::<NaiveTime>().unwrap();
+            slot_time
+        })
+        .collect::<HashSet<_>>();
+    let mut time_slots_vec = time_slots.iter().collect::<Vec<_>>();
+    time_slots_vec.sort();
+    dbg!(&time_slots_vec);
+    Json(
+        time_slots_vec
+            .iter()
+            .map(|d| d.format("%H:%M").to_string())
+            .collect(),
+    )
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct CourtWithId {
+    court_number: u8,
+    booking_id: String,
+}
+
+#[get("/available_courts?<datetime>")]
+fn get_available_courts(datetime: &RawStr) -> Json<Vec<CourtWithId>> {
+    dbg!(&datetime);
+    let date_obj = datetime.as_str().parse::<NaiveDateTime>().unwrap();
+    dbg!(&date_obj);
+    let client = get_logged_client().unwrap();
+    let response = client
+        .post(wanaplay_route("reservation/planning2").as_str())
+        .form(&[("date", date_obj.format("%Y-%m-%d").to_string())])
+        .send()
+        .unwrap();
+    let document = Document::from_read(response).unwrap();
+    let courts = document
+        .find(Class("creneauLibre"))
+        .filter(|node| {
+            node.children()
+                .next()
+                .unwrap()
+                .children()
+                .next()
+                .unwrap()
+                .text()
+                == date_obj.format("%H:%M").to_string()
+        })
+        .map(|node| {
+            let id = node
+                .attr("onclick")
+                .unwrap()
+                .split("idTspl=")
+                .collect::<Vec<_>>()[1]
+                .replace("\"", "");
+            let book_response = client
+                .get(
+                    wanaplay_route(
+                        ("reservation/takeReservationShow?idTspl=".to_string() + &id).as_ref(),
+                    )
+                    .as_str(),
+                )
+                .send()
+                .unwrap();
+            let book_doc = Document::from_read(book_response).unwrap();
+            let resa_form = book_doc
+                .find(Attr("action", "/reservation/takeReservationConfirm"))
+                .next()
+                .unwrap();
+            let terrain_node = resa_form
+                .find(Name("p"))
+                .find(|node| node.text().contains("Terrain"))
+                .unwrap();
+            let court = terrain_node.clone().children().nth(2).unwrap().text();
+            let re = Regex::new(r"Court (\d)").unwrap();
+            let matches = re.captures(&court).unwrap();
+            CourtWithId {
+                court_number: matches.get(1).unwrap().as_str().parse::<u8>().unwrap(),
+                booking_id: id.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    dbg!(&courts);
+    Json(courts)
+}
+
+#[post("/bookings/<id>?<date>")]
+fn book(id: String, date: &RawStr) -> Status {
+    let date_obj = date.as_str().parse::<NaiveDate>().unwrap();
+    let client = get_logged_client().unwrap();
+    let user_infos = get_user_infos(&client, &id);
+    match user_infos {
+        Ok(user_infos) => {
+            do_booking(&client, &user_infos, &id, &date_obj);
+            Status::Created
+        }
+        Err(_) => Status::BadRequest,
+    }
+}
+
 #[delete("/bookings/<id>")]
 fn remove_booking(id: String) -> Status {
     let client = get_logged_client().unwrap();
@@ -342,6 +467,9 @@ fn main() {
                 update_bot,
                 get_all_bookings,
                 remove_booking,
+                get_time_slots,
+                get_available_courts,
+                book,
             ],
         )
         .launch();

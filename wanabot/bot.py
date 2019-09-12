@@ -339,13 +339,121 @@ accept_handler = CommandHandler("accept", accept_dialog)
 dispatcher.add_handler(accept_handler)
 
 
-def echo(update, context):
-    logger.info('echo "{}"'.format(update.message.text))
-    context.bot.send_message(chat_id=update.message.chat_id, text=update.message.text)
+def book_dialog(update, context):
+    ik_formatter = InlineKeyboardFormatter(2)
+    now = datetime.now().date()
+    this_start = now
+    this_end = this_start + timedelta(days=6 - this_start.weekday())
+    ik_formatter.add_ik_button(
+        "This week",
+        "book_1",
+        {"from": this_start.strftime("%Y-%m-%d"), "to": this_end.strftime("%Y-%m-%d")},
+    )
+    next_start = this_end + timedelta(days=1)
+    next_end = next_start + timedelta(days=6)
+    ik_formatter.add_ik_button(
+        "Next week",
+        "book_1",
+        {"from": next_start.strftime("%Y-%m-%d"), "to": next_end.strftime("%Y-%m-%d")},
+    )
+    after_next_start = next_end + timedelta(days=1)
+    after_next_end = next_end + timedelta(days=6 - (this_start.weekday() + 1))
+    ik_formatter.add_ik_button(
+        "After next week",
+        "book_1",
+        {
+            "from": after_next_start.strftime("%Y-%m-%d"),
+            "to": after_next_end.strftime("%Y-%m-%d"),
+        },
+    )
+
+    context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text="choose a week",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
 
 
-echo_handler = MessageHandler(Filters.text, echo)
-dispatcher.add_handler(echo_handler)
+def book_1_callback(bot, chat_id, slot):
+    logger.info(slot)
+    ik_formatter = InlineKeyboardFormatter(3)
+    current_date = datetime.strptime(slot["from"], "%Y-%m-%d")
+    to_date = datetime.strptime(slot["to"], "%Y-%m-%d")
+    while current_date <= to_date:
+        print(current_date)
+        ik_formatter.add_ik_button(
+            current_date.strftime("%A"), "book_2", current_date.strftime("%Y-%m-%d")
+        ),
+        current_date = current_date + timedelta(days=1)
+
+    bot.send_message(
+        chat_id=chat_id,
+        text="choose a day",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
+
+
+def book_2_callback(bot, chat_id, date):
+    logger.info(date)
+    response = requests.get("{}/time_slots?date={}".format(config.booker_api, date))
+    slots = json.loads(response.content)
+    print(slots)
+    ik_formatter = InlineKeyboardFormatter(5)
+    for slot in slots:
+        ik_formatter.add_ik_button(slot, "book_3", date + "T" + slot + ":00")
+
+    bot.send_message(
+        chat_id=chat_id,
+        text="choose a time slot",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
+
+
+def book_3_callback(bot, chat_id, book_datetime):
+    logger.info(book_datetime)
+    response = requests.get(
+        "{}/available_courts?datetime={}".format(config.booker_api, book_datetime)
+    )
+    courts = json.loads(response.content)
+    print(courts)
+    ik_formatter = InlineKeyboardFormatter(4)
+    for court in courts:
+        ik_formatter.add_ik_button(
+            court["court_number"],
+            "book_f",
+            {"id": court["booking_id"], "date": book_datetime.split("T")[0]},
+        )
+
+    bot.send_message(
+        chat_id=chat_id,
+        text="choose a court",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=ik_formatter.inline_keyboard),
+    )
+
+
+def book_f_callback(bot, chat_id, book_data):
+    logger.info(book_data)
+    response = requests.post(
+        "{}/bookings/{}?date={}".format(
+            config.booker_api, book_data["id"], book_data["date"]
+        )
+    )
+    return handle_response(
+        response, "book for {} ({})".format(book_data["date"], book_data["id"])
+    )
+
+
+book_handler = CommandHandler("book", book_dialog)
+dispatcher.add_handler(book_handler)
+
+
+# def echo(update, context):
+#     logger.info('echo "{}"'.format(update.message.text))
+#     context.bot.send_message(chat_id=update.message.chat_id, text=update.message.text)
+#
+#
+# echo_handler = MessageHandler(Filters.text, echo)
+# dispatcher.add_handler(echo_handler)
 
 
 def callback_manager(update, callback_context):
@@ -379,6 +487,7 @@ def help(update, context):
     help_text = """
 accept - accept court(s) attending
 add - create a bot
+book - make a booking  
 bookings - display all bookings  
 bots - display all bots
 cancel - cancel a booking
