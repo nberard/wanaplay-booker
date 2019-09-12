@@ -16,7 +16,7 @@ extern crate select;
 extern crate failure;
 use failure::bail;
 use select::document::Document;
-use select::predicate::{Attr, Class};
+use select::predicate::Class;
 pub type Error = failure::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 use wanaplay_booker::*;
