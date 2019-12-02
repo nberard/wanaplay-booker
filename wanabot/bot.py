@@ -235,8 +235,10 @@ def cancel_dialog(update, context):
 
 
 def cancel_callback(bot, chat_id, booking_id):
+    bookings = get_bookings()
+    booking = next(booking for booking in bookings if booking['id'] == booking_id)
     response = requests.delete("{}/bookings/{}".format(config.booker_api, booking_id))
-    return handle_response(response, "cancel " + booking_id)
+    return handle_response(response, "cancel {} at {}".format(booking['date'], booking['court_time']))
 
 
 cancel_handler = CommandHandler("cancel", cancel_dialog)
@@ -357,7 +359,7 @@ def book_dialog(update, context):
         {"from": next_start.strftime("%Y-%m-%d"), "to": next_end.strftime("%Y-%m-%d")},
     )
     after_next_start = next_end + timedelta(days=1)
-    after_next_end = next_end + timedelta(days=6 - (this_start.weekday() + 1))
+    after_next_end = this_start + timedelta(days=14)
     ik_formatter.add_ik_button(
         "After next week",
         "book_1",
@@ -461,14 +463,17 @@ def callback_manager(update, callback_context):
     data = json.loads(update.callback_query["data"])
     logger.info("callback_manager for {}".format(data))
     try:
+        chat_id = update.callback_query.message.chat.id
         message = getattr(sys.modules[__name__], "%s_callback" % data["a"])(
-            callback_context.bot, update.callback_query.message.chat.id, data["d"]
+            callback_context.bot, chat_id, data["d"]
         )
+        if message:
+            callback_context.bot.send_message(chat_id, message)
         callback_context.bot.answer_callback_query(
             update.callback_query["id"], text=message
         )
         callback_context.bot.delete_message(
-            update.callback_query.message.chat.id,
+            chat_id,
             update.callback_query.message.message_id,
         )
     except Exception as e:
